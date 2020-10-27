@@ -23,7 +23,7 @@ func GenRsaKeys() {
 		if err != nil {
 			log.Panic()
 		}
-		for i := 0; i <= 99; i++ {
+		for i := 0; i <= 84; i++ {
 			if !isExist("./Keys/N" + strconv.Itoa(i)) {
 				err := os.Mkdir("./Keys/N"+strconv.Itoa(i), 0644)
 				if err != nil {

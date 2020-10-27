@@ -62,7 +62,9 @@ func (n *NodeChanel) msgProcessing(pp *PrePrepare) {
 			n.CurState = Prepared
 			n.PrepareCount++
 			specifiedCount := 0
-			plog.Info("%s节点%d通道收到%s消息", n.node.nodeID, pre.SequenceID, pre.NodeID)
+			if n.node.nID < 6 {
+				plog.Info("%s节点%d通道收到%s消息", n.node.nodeID, pre.SequenceID, pre.NodeID)
+			}
 			if n.node.bPrimary {
 				specifiedCount = len(n.node.NodeTable) / 3 * 2
 			} else {
@@ -76,7 +78,7 @@ func (n *NodeChanel) msgProcessing(pp *PrePrepare) {
 				}
 				n.node.broadcast(cCommit, bc)
 				n.CurState = Committed
-				plog.Info("%s已发送Commit消息%d", n.node.nodeID, n.MsgSequence)
+				//plog.Info("%s已发送Commit消息%d", n.node.nodeID, n.MsgSequence)
 			}
 		case cCommit:
 			c := new(Commit)
@@ -89,21 +91,33 @@ func (n *NodeChanel) msgProcessing(pp *PrePrepare) {
 				break
 			}
 			if n.CommitCount > len(n.node.NodeTable)/3*2 {
-				r := new(Reply)
-				r.Content = n.Content
-				r.NodeID = n.node.nodeID
-				r.Message.ID = n.MsgSequence
-				br, err := json.Marshal(r)
-				if err != nil {
-					log.Panic(err)
+				if n.node.Level == 1 {
+					r := new(Reply)
+					r.Content = n.Content
+					r.NodeID = n.node.nodeID
+					r.Message.ID = n.MsgSequence
+					br, err := json.Marshal(r)
+					if err != nil {
+						log.Panic(err)
+					}
+					cont := jointMessage(cReply, br)
+					tcpDial(cont, "127.0.0.1:8888")
+				} else {
+					bPP, err := json.Marshal(pp)
+					if err != nil {
+						log.Panic(err)
+					}
+					cont := jointMessage(cPrePrepare, bPP)
+					tcpDial(cont, n.node.faddr)
+					//plog.Info("%s节点已发送至父节点%s", n.node.nodeID, n.node.fnodeID)
 				}
-				cont := jointMessage(cReply, br)
-				tcpDial(cont, "127.0.0.1:8888")
 				n.node.lock.Lock()
 				n.node.CurCount--
 				delete(n.node.NodeMsgEntrance, n.MsgSequence)
 				n.node.lock.Unlock()
-				plog.Info("%s已发送Reply消息%d,当前运行中%d", n.node.nodeID, n.MsgSequence, n.node.CurCount)
+				if n.node.nID < 6 {
+					plog.Info("%s已发送Reply消息%d,当前运行中%d,父节点%d", n.node.nodeID, n.MsgSequence, n.node.CurCount, n.node.fnodeID)
+				}
 				return
 			}
 		}

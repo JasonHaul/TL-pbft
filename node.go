@@ -16,42 +16,97 @@ import (
 
 type Node struct {
 	nodeID          string //节点ID
-	pnodeID         string //主节点ID
+	nID             int
+	addr            string //节点监听地址
+	fnodeID         string
+	faddr           string
 	lock            sync.Mutex
 	Level           int                 //当前节点level
 	CurCount        int                 //当前处理消息数量
 	CurSequence     int                 //当前消息号，只针对主节点有效
-	addr            string              //节点监听地址
-	bPrimary        bool                //是否主节点
+	bPrimary        bool                //是否主节点，当前节点
 	rsaPrivKey      []byte              //RSA私钥
 	rsaPubKey       []byte              //RSA公钥
-	NodeTable       map[string]string   // key=nodeID, value=url
+	NodeTable       map[string]string   // key=nodeID, value=url,同级node
+	SubNodeTable    map[string]string   //子级node
 	NodeMsgEntrance map[int]*NodeChanel //节点每个线程对应的消息通道，接收对应消息
 }
 
 var plog = logs.NewLogger()
 
-func PBFT(nodeTable map[string]string) {
+var k = 4
+var level = 3
+var NodeTable = make(map[string]*Node)
+
+func PBFT() {
 	plog.SetLogger(logs.AdapterFile, `{"filename":"pbft.log"}`)
 	plog.Async()
-	n0 := NewNode(true, "N0", "127.0.0.1:8000", nodeTable)
-	go n0.TcpListen()
-	for i := 1; i <= 99; i++ {
-		n := NewNode(false, "N"+strconv.Itoa(i), nodeTable["N"+strconv.Itoa(i)], nodeTable)
-		go n.TcpListen()
+
+	LevelNode := make(map[string]string)
+	index := 0
+	for i := 0; i < k; i++ {
+		n := new(Node)
+		if i == 0 {
+			n.bPrimary = true
+		}
+		n.nID = index
+		n.nodeID = "N" + strconv.Itoa(index)
+		port := 8000 + index
+		n.addr = "127.0.0.1:" + strconv.Itoa(port)
+		n.rsaPrivKey = getPivKey(n.nodeID)
+		n.rsaPubKey = getPubKey(n.nodeID)
+		n.NodeMsgEntrance = make(map[int]*NodeChanel)
+		n.NodeTable = make(map[string]string)
+		n.Level = 1
+		index++
+		n.SubNodeTable = make(map[string]string)
+		n.SubNodeTable = n.SubNewNode(&index, n, n.Level)
+		LevelNode[n.nodeID] = n.addr
+		NodeTable[n.nodeID] = n
+	}
+
+	for ID, _ := range LevelNode {
+		NodeTable[ID].NodeTable = LevelNode
+	}
+
+	for _, node := range NodeTable {
+		go node.TcpListen()
+		fmt.Println(node.NodeTable)
+		fmt.Println(node.SubNodeTable)
 	}
 }
 
-func NewNode(primary bool, nodeID, addr string, nodeTable map[string]string) *Node {
-	node := new(Node)
-	node.nodeID = nodeID
-	node.addr = addr
-	node.NodeTable = nodeTable
-	node.bPrimary = primary
-	node.rsaPrivKey = getPivKey(nodeID)
-	node.rsaPubKey = getPubKey(nodeID)
-	node.NodeMsgEntrance = make(map[int]*NodeChanel)
-	return node
+func (n *Node) SubNewNode(index *int, fnode *Node, l int) map[string]string {
+	LevelNode := make(map[string]string)
+	l++
+	for i := 0; i < k; i++ {
+		node := new(Node)
+		nID := *index
+		node.nID = nID
+		node.nodeID = "N" + strconv.Itoa(nID)
+		port := 8000 + *index
+		node.addr = "127.0.0.1:" + strconv.Itoa(port)
+		node.rsaPrivKey = getPivKey(n.nodeID)
+		node.rsaPubKey = getPubKey(n.nodeID)
+		node.NodeMsgEntrance = make(map[int]*NodeChanel)
+		node.NodeTable = make(map[string]string)
+		node.Level = l
+		node.faddr = fnode.addr
+		node.fnodeID = fnode.nodeID
+		*index++
+		n.SubNodeTable = make(map[string]string)
+		if l < level {
+			node.SubNodeTable = n.SubNewNode(index, node, node.Level)
+		}
+		LevelNode[node.nodeID] = node.addr
+		NodeTable[node.nodeID] = node
+	}
+
+	for ID, _ := range LevelNode {
+		NodeTable[ID].NodeTable = LevelNode
+	}
+
+	return LevelNode
 }
 
 func (n *Node) TcpListen() {
@@ -98,7 +153,19 @@ func (n *Node) dispatchMsg(data []byte) {
 }
 
 func (n *Node) handleRequest(content []byte) {
-	if !n.bPrimary {
+	if n.Level != level && len(n.SubNodeTable) != 0 {
+		if n.bPrimary {
+			//n.CurSequence++
+			message := jointMessage(cRequest, content)
+			for i := range n.NodeTable {
+				if n.nodeID == i {
+					continue
+				}
+				tcpDial(message, n.NodeTable[i])
+			}
+		}
+
+		n.broadcastSubNode(cRequest, content)
 		return
 	}
 	if n.CurCount > 100 {
@@ -115,11 +182,10 @@ func (n *Node) handleRequest(content []byte) {
 	digest := getDigest(*r)
 
 	//主节点对消息摘要进行签名
-	n.CurSequence++
 	digestByte, _ := hex.DecodeString(digest)
 	signInfo := n.RsaSignWithSha256(digestByte, n.rsaPrivKey)
 	//拼接成PrePrepare，准备发往follower节点
-	pp := PrePrepare{*r, digest, n.CurSequence, signInfo}
+	pp := PrePrepare{*r, digest, r.ID, signInfo}
 	b, err := json.Marshal(pp)
 	if err != nil {
 		log.Panic(err)
@@ -145,7 +211,7 @@ func (n *Node) handlePrePrepare(content []byte) {
 	if err != nil {
 		log.Panic(err)
 	}
-	plog.Info("%s收到主节点PP消息%d", n.nodeID, pp.SequenceID)
+	//plog.Info("%s收到主节点PP消息%d", n.nodeID, pp.SequenceID)
 
 	n.CurSequence = pp.SequenceID
 	nodeChanel := NewNodeChanel(n)
@@ -165,7 +231,7 @@ func (n *Node) handlePrepare(data []byte) {
 	if err != nil {
 		log.Panic(err)
 	}
-	plog.Info("%s收到%sPre消息%d", n.nodeID, pre.NodeID, pre.SequenceID)
+	//plog.Info("%s收到%sPre消息%d", n.nodeID, pre.NodeID, pre.SequenceID)
 
 	go func() {
 		for i := 0; i <= 10; i++ {
@@ -189,7 +255,7 @@ func (n *Node) handleCommit(data []byte) {
 	if err != nil {
 		log.Panic(err)
 	}
-	plog.Info("%s收到%sC消息%d", n.nodeID, c.NodeID, c.SequenceID)
+	//plog.Info("%s收到%sC消息%d", n.nodeID, c.NodeID, c.SequenceID)
 
 	go func() {
 		for i := 0; i <= 10; i++ {
@@ -213,5 +279,12 @@ func (n *Node) broadcast(cmd command, content []byte) {
 	message := jointMessage(cmd, content)
 	for i := range n.NodeTable {
 		tcpDial(message, n.NodeTable[i])
+	}
+}
+
+func (n *Node) broadcastSubNode(cmd command, content []byte) {
+	message := jointMessage(cmd, content)
+	for i := range n.SubNodeTable {
+		tcpDial(message, n.SubNodeTable[i])
 	}
 }

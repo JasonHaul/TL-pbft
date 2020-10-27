@@ -14,21 +14,19 @@ import (
 
 var SendCount int
 var GetCount int
-var NodeTable map[string]string
 
 //客户端的监听地址
 var clientAddr = "127.0.0.1:8888"
 
-func ClientSendMessageAndListen(nodeTable map[string]string) {
+func ClientSendMessageAndListen() {
 	ClientMsgMap = make(map[int]*ClientMsg)
-	NodeTable = nodeTable
 	//开启客户端的本地监听（主要用来接收节点的reply信息）
 	go ClientTcpListen()
 	h, _, _ := formatTimeHeader(time.Now())
 	fmt.Printf("%s: 客户端开启监听，地址：%s\n", h, clientAddr)
 
 	//stdReader := bufio.NewReader(os.Stdin)
-	for i := 0; i < 100; i++ {
+	for i := 0; i < 1; i++ {
 		data := "hello world!"
 		// data, err := stdReader.ReadString('\n')
 		// if err != nil {
@@ -38,7 +36,7 @@ func ClientSendMessageAndListen(nodeTable map[string]string) {
 		r := new(Request)
 		r.Timestamp = time.Now().UnixNano()
 		r.ClientAddr = clientAddr
-		r.Message.ID = getRandom()
+		r.Message.ID = i
 		//消息内容就是用户的输入
 		r.Message.Content = strings.TrimSpace(data)
 		br, err := json.Marshal(r)
@@ -48,11 +46,12 @@ func ClientSendMessageAndListen(nodeTable map[string]string) {
 		fmt.Println(string(br))
 		content := jointMessage(cRequest, br)
 		//默认N0为主节点，直接把请求信息发送至N0
-		tcpDial(content, NodeTable["N0"])
+		tcpDial(content, "127.0.0.1:8000")
 		SendCount++
+		time.Sleep(time.Microsecond * 100)
 	}
 
-	time.Sleep(time.Second * 100)
+	time.Sleep(time.Second * 10)
 
 	fmt.Printf("发送连接数：%d\n", SendCount)
 	fmt.Printf("接受连接数：%d\n", GetCount)
