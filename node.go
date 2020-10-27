@@ -23,6 +23,7 @@ type Node struct {
 	lock            sync.Mutex
 	Level           int                 //当前节点level
 	CurCount        int                 //当前处理消息数量
+	fnodepp         int                 //收到子节点消息数
 	CurSequence     int                 //当前消息号，只针对主节点有效
 	bPrimary        bool                //是否主节点，当前节点
 	rsaPrivKey      []byte              //RSA私钥
@@ -186,30 +187,30 @@ func (n *Node) handleRequest(content []byte) {
 	signInfo := n.RsaSignWithSha256(digestByte, n.rsaPrivKey)
 	//拼接成PrePrepare，准备发往follower节点
 	pp := PrePrepare{*r, digest, r.ID, signInfo}
-	b, err := json.Marshal(pp)
-	if err != nil {
-		log.Panic(err)
-	}
-	//进行PrePrepare广播
-	message := jointMessage(cPrePrepare, b)
-	func() {
-		for i := range n.NodeTable {
-			if i == n.nodeID {
-				continue
-			}
-			tcpDial(message, n.NodeTable[i])
-		}
-	}()
+	n.CurSequence = pp.SequenceID
+	nodeChanel := NewNodeChanel(n)
+	n.lock.Lock()
+	n.CurCount++
+	n.NodeMsgEntrance[pp.SequenceID] = nodeChanel
+	n.lock.Unlock()
 
-	n.dispatchMsg(message)
+	go nodeChanel.msgProcessing(&pp)
 }
 
 func (n *Node) handlePrePrepare(content []byte) {
+	n.fnodepp++
+	if n.fnodepp < len(n.NodeTable)/3*2 {
+		return
+	}
+	n.fnodepp = 0
 	//使用json解析出PrePrepare结构体
 	pp := new(PrePrepare)
 	err := json.Unmarshal(content, pp)
 	if err != nil {
 		log.Panic(err)
+	}
+	if n.nID < 6 {
+		plog.Info("%s收到主节点PP消息%d", n.nodeID, pp.SequenceID)
 	}
 	//plog.Info("%s收到主节点PP消息%d", n.nodeID, pp.SequenceID)
 

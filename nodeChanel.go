@@ -61,16 +61,11 @@ func (n *NodeChanel) msgProcessing(pp *PrePrepare) {
 			}
 			n.CurState = Prepared
 			n.PrepareCount++
-			specifiedCount := 0
 			if n.node.nID < 6 {
 				plog.Info("%s节点%d通道收到%s消息", n.node.nodeID, pre.SequenceID, pre.NodeID)
 			}
-			if n.node.bPrimary {
-				specifiedCount = len(n.node.NodeTable) / 3 * 2
-			} else {
-				specifiedCount = (len(n.node.NodeTable) / 3 * 2) - 1
-			}
-			if n.PrepareCount > specifiedCount {
+
+			if n.PrepareCount > len(n.node.NodeTable)/3*2 {
 				c := Commit{pre.Digest, pre.SequenceID, n.node.nodeID, pre.Sign}
 				bc, err := json.Marshal(c)
 				if err != nil {
